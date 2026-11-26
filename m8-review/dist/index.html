@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10141e">
+  <title>M8 乌拉特克复盘室 · BEAT IT</title>
+  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="timeline.css?v=5">
+  <link rel="stylesheet" href="analysis.css?v=5">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <img src="assets/boss.webp" alt="" width="40" height="40">
+      <div class="masthead-title">
+        <p class="eyebrow">BEAT IT · 史诗复盘</p>
+        <h1>M8 乌拉特克</h1>
+      </div>
+      <div class="masthead-actions">
+        <a href="../m8/">战术训练台</a>
+        <details class="report-location">
+          <summary>WCL 定位</summary>
+          <div class="location-popover">
+            <form id="location-form">
+              <label for="report-url" class="visually-hidden">WCL 战斗链接</label>
+              <input id="report-url" type="url" placeholder="粘贴 Warcraft Logs 战斗链接" required>
+              <button type="submit">定位</button>
+            </form>
+            <p>已载入的报告可按链接跳到战斗和时间。</p>
+          </div>
+        </details>
+        <label class="action primary upload" for="import-file">导入日志</label>
+        <input id="import-file" class="visually-hidden" type="file" accept=".json,application/json">
+      </div>
+    </header>
+
+    <p id="message" class="message" role="status" hidden></p>
+    <section class="battle" aria-label="战斗选择">
+      <div class="report-identity"><strong id="report-title">等待导入 M8 日志</strong></div>
+      <label id="catalog-label" hidden><span>报告</span><select id="catalog"></select></label>
+      <div class="fight-pick">
+        <button id="fight-prev" type="button" aria-label="上一把" disabled>‹</button>
+        <label><span class="visually-hidden">战斗</span><select id="fight" disabled><option>尚无战斗</option></select></label>
+        <button id="fight-next" type="button" aria-label="下一把" disabled>›</button>
+      </div>
+      <nav id="fight-strip" class="fight-strip" aria-label="全部尝试" hidden></nav>
+      <a id="source" target="_blank" rel="noopener noreferrer" hidden>在 WCL 查看</a>
+    </section>
+    <div class="workspace">
+      <div class="map-column">
+        <section class="panel replay" aria-labelledby="replay-title">
+        <header class="panel-head">
+          <h2 id="replay-title">站位回放</h2>
+          <div class="replay-status"><span id="carriers" class="badge carrying" hidden></span><span id="phase" class="badge">未加载</span><span id="heart-live" class="badge heart" hidden>易伤</span></div>
+        </header>
+        <div id="map-stage" class="map-stage">
+          <canvas id="map" width="800" height="720" aria-label="乌拉特克战斗站位图"></canvas>
+          <div id="map-hud" class="map-hud" hidden>
+            <b id="map-hud-time">0:00</b>
+            <span id="map-hud-phase" class="hud-phase">P1</span>
+            <div id="map-bosses"></div>
+            <div id="map-cast" class="map-cast" hidden>
+              <strong id="map-cast-name"></strong><span id="map-cast-time"></span>
+              <span class="cast-track"><i id="map-cast-fill"></i></span>
+            </div>
+          </div>
+          <div id="map-debuffs" class="map-debuffs" hidden></div>
+          <p id="map-note" class="map-note">导入复盘数据后显示日志位置</p>
+          <div class="zoom-tools" aria-label="地图缩放">
+            <button id="zoom-out" type="button" aria-label="缩小地图" disabled>−</button>
+            <button id="zoom-in" type="button" aria-label="放大地图" disabled>＋</button>
+            <button id="zoom-reset" type="button" disabled>重置</button>
+          </div>
+        </div>
+        <div class="transport">
+          <button id="play" class="primary" aria-label="播放" aria-pressed="false" disabled>▶</button>
+          <button id="back" aria-label="退回五秒" disabled>−5 秒</button>
+          <button id="forward" aria-label="前进五秒" disabled>+5 秒</button>
+          <div class="death-nav" aria-label="死亡定位">
+            <button id="death-prev" aria-label="上一个死亡" disabled>‹</button>
+            <span id="death-position" title="已发生死亡 / 总数">0 / 0</span>
+            <button id="death-next" aria-label="下一个死亡" disabled>›</button>
+          </div>
+          <output id="clock">0:00 / 0:00</output>
+          <select id="speed" aria-label="播放速度" disabled>
+            <option value=".25">0.25×</option><option value=".5">0.5×</option><option value="1" selected>1×</option>
+            <option value="2">2×</option><option value="4">4×</option>
+          </select>
+          <button id="replay-fullscreen" aria-label="地图全屏" type="button">全屏</button>
+        </div>
+        <label class="seek"><span class="visually-hidden">战斗播放位置</span><input id="seek" type="range" min="0" max="1" step="1" value="0" disabled></label>
+        <div class="map-tools">
+          <label>地图高亮 <select id="focus" disabled><option value="">全部成员</option></select></label>
+          <details class="layer-control">
+            <summary>显示与图层</summary>
+            <div class="layer-options">
+              <label><input id="names" type="checkbox"> 姓名</label>
+              <label><input id="player-hp" type="checkbox"> 玩家血量</label>
+              <label><input id="npc-hp" type="checkbox" checked> 首领血量</label>
+              <label><input id="show-targets" type="checkbox"> 已记录施法目标</label>
+              <label><input id="show-debuffs" type="checkbox"> 机制减益</label>
+              <label><input id="art" type="checkbox" checked> 场地参考图</label>
+            </div>
+          </details>
+          <details class="layer-control map-legend">
+            <summary>图例</summary>
+            <div class="layer-options">
+              <p><i class="small-egg"></i> 手持小蛋</p>
+              <p><i class="large-egg"></i> 手持大蛋</p>
+              <p><i class="ground-egg"></i> 卵簇位置记录</p>
+              <p><i class="fang-line"></i> 毒牙点名或连线</p>
+              <p><i class="p3-target"></i> 咬击或易爆清除减益</p>
+            </div>
+          </details>
+          <button id="copy-moment" class="small-control" type="button" disabled>定位链接</button>
+          <label class="small-control video-file">本地录像<input id="local-video" class="visually-hidden" type="file" accept="video/*"></label>
+          <button id="record-replay" class="small-control record-control" type="button" aria-label="录制地图回放">录制</button>
+        </div>
+        <div id="video-bar" class="video-bar" hidden>
+          <div class="video-settings">
+            <span data-video-name></span>
+            <label>视频偏移 <input id="video-offset" type="number" step=".1" value="0"> 秒</label>
+            <button id="close-video" class="small-control" type="button">关闭录像</button>
+          </div>
+          <video playsinline preload="metadata"></video>
+        </div>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-title">
+          <header class="panel-head"><h2 id="timeline-title">机制时间轴</h2><span class="quiet">点击空白处定位，点击事件回看</span></header>
+          <div id="timeline" class="timeline"><p class="empty">加载战斗后显示阶段和机制事件。</p></div>
+        </section>
+      </div>
+
+      <aside class="review-rail" aria-label="实时记录和死亡分析">
+        <section class="panel now-panel" aria-labelledby="now-title">
+          <header class="panel-head"><h2 id="now-title">现在</h2><time id="now-time" class="badge">0:00</time></header>
+          <div class="now-content">
+            <div id="next-cast" class="next-cast"></div>
+            <dl class="now-counts">
+              <div><dt>未记录倒地</dt><dd id="alive-count">—</dd></div>
+              <div><dt>持有剧毒之壳</dt><dd id="hold-count">—</dd></div>
+              <div><dt>已记录打断</dt><dd id="interrupt-count">—</dd></div>
+            </dl>
+            <div id="egg-status" class="egg-status" hidden>
+              <p><img src="assets/egg.webp" alt="" width="18" height="18"><strong>蛇卵</strong><span>当前携带</span></p>
+            <div><span>小蛋 <b id="small-eggs">0</b></span><span>大蛋 <b id="large-eggs">0</b></span><span title="有位置和时间记录的卵簇，地面蛋总数缺少可靠记录">卵簇记录 <b id="ground-eggs">—</b></span></div>
+            </div>
+            <div id="carrier-list" class="carrier-list" hidden></div>
+            <div id="fang-status" class="fang-status" hidden></div>
+            <div id="room-status" class="room-status" hidden></div>
+          </div>
+        </section>
+        <section class="panel review" aria-labelledby="review-title">
+        <header class="panel-head">
+          <h2 id="review-title">发生了什么 <span id="row-count" class="badge">0 条</span></h2>
+          <nav class="tabs" aria-label="记录页面">
+            <button data-view="digest" aria-pressed="true">重点</button>
+            <button data-view="events" aria-pressed="false">事件</button>
+            <button data-view="players" aria-pressed="false">成员</button>
+          </nav>
+        </header>
+        <div class="filters">
+          <label id="kind-label"><span class="visually-hidden">机制类型</span><select id="kind"><option value="">全部机制</option></select></label>
+          <label><span class="visually-hidden">搜索</span><input id="search" type="search" placeholder="搜索成员或技能"></label>
+        </div>
+        <div id="feed-controls" class="feed-controls">
+          <label><input id="nearby" type="checkbox" checked> 前后 20 秒</label>
+          <label id="group-label"><input id="group-events" type="checkbox" checked> 合并同刻</label>
+          <button id="follow" type="button" aria-pressed="true">跟随回放</button>
+        </div>
+        <div id="rows" class="rows" tabindex="0" aria-label="战斗记录列表"></div>
+        <button id="more" class="more" hidden>加载更多</button>
+        </section>
+        <section class="panel deaths-panel" aria-labelledby="deaths-title">
+          <header class="panel-head"><h2 id="deaths-title">死亡分析</h2><span id="death-count" class="badge">0 次</span></header>
+          <div id="death-list" class="death-list" aria-label="死亡记录">
+            <p class="empty">加载战斗后显示死亡时间和致死技能。</p>
+          </div>
+        </section>
+      </aside>
+    </div>
+    <section id="analysis" class="panel analysis-deck" aria-label="战斗复盘">
+      <p class="empty">载入战斗后可查看概览、成员、机制和死亡记录。</p>
+    </section>
+    <footer>位置来自日志采样。战术底图仅作参考。搬蛋、命中和死亡记录需结合打法复核。</footer>
+  </main>
+  <script src="mechanics.js" defer></script>
+  <script src="model.js" defer></script>
+  <script src="map-geometry.js?v=5" defer></script>
+  <script src="evidence.js?v=5" defer></script>
+  <script src="room-evidence.js?v=5" defer></script>
+  <script src="p3-evidence.js?v=5" defer></script>
+  <script src="replay-tools.js?v=5" defer></script>
+  <script src="analysis.js?v=5" defer></script>
+  <script src="timeline.js?v=5" defer></script>
+  <script src="app.js?v=5" defer></script>
+</body>
+</html>
