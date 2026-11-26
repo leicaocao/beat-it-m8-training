@@ -947,7 +947,8 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
   const canvas = $('battle-map');
   const ctx = canvas.getContext('2d');
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const state = { filter: '全部', clip: library[0], image: null, texture: null, backdrops: new Map(), request: 0, step: 0, time: 0, playing: false, ended: false, frame: -1, previous: null, handle: 0 };
+  const state = { filter: '全部', clip: library[0], image: null, texture: null, backdrops: new Map(), request: 0,
+    step: 0, time: 0, playing: false, singleStep: false, ended: false, frame: -1, previous: null, handle: 0 };
   const lead = 430;
   const hold = 2050;
 
@@ -1066,14 +1067,37 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     syncControls();
   }
 
-  function seekStep(index) {
+  function currentMotion() {
+    return state.clip.step_motion_ms?.[state.step] ?? state.clip.motion_ms;
+  }
+
+  function startPlayback() {
+    state.playing = true;
+    syncControls();
+    state.handle = requestAnimationFrame(tick);
+  }
+
+  function showSelectedStep() {
+    if (!state.image) return;
+    if (state.singleStep && !reduced.matches && !document.hidden) {
+      draw(state.step * state.clip.frames, 0);
+      startPlayback();
+    } else {
+      state.singleStep = false;
+      still();
+      syncControls();
+    }
+  }
+
+  function seekStep(index, autoplay = false) {
     if (index < 0 || index >= state.clip.beats.length) return;
     stop();
     state.step = index;
     state.time = 0;
     state.ended = false;
+    state.singleStep = autoplay && currentMotion() > 0;
     updateStep();
-    still();
+    showSelectedStep();
   }
 
   function tick(now) {
@@ -1081,8 +1105,14 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     const delta = state.previous === null ? 0 : Math.max(0, now - state.previous);
     state.previous = now;
     state.time += delta;
-    const currentMotion = () => state.clip.step_motion_ms?.[state.step] ?? state.clip.motion_ms;
     let motion = currentMotion();
+    if (state.singleStep && state.time >= lead + motion) {
+      draw((state.step + 1) * state.clip.frames - 1);
+      state.singleStep = false;
+      state.time = 0;
+      stop();
+      return;
+    }
     while (state.time >= lead + motion + hold) {
       if (state.step + 1 === state.clip.beats.length) {
         draw((state.step + 1) * state.clip.frames - 1);
@@ -1108,9 +1138,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     }
     if (!state.image) return;
     if (state.ended) seekStep(0);
-    state.playing = true;
-    syncControls();
-    state.handle = requestAnimationFrame(tick);
+    startPlayback();
   }
 
   function list() {
@@ -1171,7 +1199,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
       $('step-content').after(rail);
     }
     rail.replaceChildren(...clip.beats.map(([title], index) => {
-      const control = button('', () => seekStep(index));
+      const control = button('', () => seekStep(index, true));
       const n = document.createElement('span');
       n.textContent = String(index + 1).padStart(2, '0');
       control.append(n, document.createTextNode(title));
@@ -1186,8 +1214,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
       if (state.request !== key) return;
       state.image = image;
       state.texture = texture;
-      still();
-      syncControls();
+      showSelectedStep();
     }).catch(() => {
       if (state.request !== key) return;
       $('map-notice').textContent = '画面未载入。仍可阅读步骤和岗位说明。';
@@ -1203,8 +1230,8 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     if (phase !== '全部' && state.clip.phase !== phase) choose(library.find((clip) => clip.phase === phase), true);
   }
 
-  $('prev').addEventListener('click', () => seekStep(state.step - 1));
-  $('next').addEventListener('click', () => seekStep(state.step + 1));
+  $('prev').addEventListener('click', () => seekStep(state.step - 1, true));
+  $('next').addEventListener('click', () => seekStep(state.step + 1, true));
   $('play').addEventListener('click', togglePlay);
   $('carry-download').addEventListener('click', () => {
     if (state.clip.scene !== 'p1carry' || !state.image) return;
