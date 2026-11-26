@@ -948,7 +948,8 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
   const ctx = canvas.getContext('2d');
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
   const state = { filter: '全部', clip: library[0], image: null, texture: null, backdrops: new Map(), request: 0,
-    step: 0, time: 0, playing: false, singleStep: false, ended: false, frame: -1, previous: null, handle: 0 };
+    step: 0, time: 0, playing: false, singleStep: false, resumeWhenVisible: false,
+    ended: false, frame: -1, previous: null, handle: 0 };
   const lead = 430;
   const hold = 2050;
 
@@ -1072,6 +1073,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
   }
 
   function startPlayback() {
+    state.resumeWhenVisible = false;
     state.playing = true;
     syncControls();
     state.handle = requestAnimationFrame(tick);
@@ -1079,9 +1081,14 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
 
   function showSelectedStep() {
     if (!state.image) return;
-    if (state.singleStep && !reduced.matches && !document.hidden) {
+    if (state.singleStep && !reduced.matches) {
       draw(state.step * state.clip.frames, 0);
-      startPlayback();
+      if (document.hidden) {
+        state.resumeWhenVisible = true;
+        syncControls();
+      } else {
+        startPlayback();
+      }
     } else {
       state.singleStep = false;
       still();
@@ -1095,6 +1102,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     state.step = index;
     state.time = 0;
     state.ended = false;
+    state.resumeWhenVisible = false;
     state.singleStep = autoplay && currentMotion() > 0;
     updateStep();
     showSelectedStep();
@@ -1147,7 +1155,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     $('lesson-count').textContent = `${results.length} 项`;
     pane.replaceChildren();
     for (const clip of results) {
-      const control = button('', () => choose(clip, true), 'lesson-button');
+      const control = button('', () => choose(clip, { writeHash: true, autoplay: true }), 'lesson-button');
       control.dataset.scene = clip.scene;
       control.setAttribute('aria-current', String(state.clip === clip));
       const icon = document.createElement('img');
@@ -1166,7 +1174,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     }
   }
 
-  function choose(clip, writeHash = false) {
+  function choose(clip, { writeHash = false, autoplay = false, step = 0 } = {}) {
     stop();
     state.clip = clip;
     state.image = null;
@@ -1206,7 +1214,7 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
       return control;
     }));
     $('map-notice').hidden = true;
-    seekStep(0);
+    seekStep(step >= 0 && step < clip.beats.length ? step : 0, autoplay);
     for (const control of $('lesson-list').children) control.setAttribute('aria-current', String(control.dataset.scene === clip.scene));
     const key = ++state.request;
     const sceneArt = painter ? Promise.all(painter.images.map((id) => loadImage(art[id]).then((im) => [id, im]))).then(Object.fromEntries) : loadImage(clip.file);
@@ -1227,7 +1235,9 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
     state.filter = phase;
     [...$('filters').children].forEach((el) => el.setAttribute('aria-pressed', String(el.textContent === phase)));
     list();
-    if (phase !== '全部' && state.clip.phase !== phase) choose(library.find((clip) => clip.phase === phase), true);
+    if (phase !== '全部' && state.clip.phase !== phase) {
+      choose(library.find((clip) => clip.phase === phase), { writeHash: true, autoplay: true });
+    }
   }
 
   $('prev').addEventListener('click', () => seekStep(state.step - 1, true));
@@ -1252,16 +1262,47 @@ window.M8_LIBRARY = {"source_video": "https://www.bilibili.com/video/BV1mGW16NEi
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, 'image/png');
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && state.playing) stop(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state.playing) {
+      state.resumeWhenVisible = state.singleStep;
+      stop();
+    } else if (!document.hidden && state.resumeWhenVisible && state.image) {
+      if (reduced.matches) {
+        state.resumeWhenVisible = false;
+        showSelectedStep();
+      } else {
+        startPlayback();
+      }
+    }
+  });
   $('boss-portrait').src = art.boss;
   document.querySelector('.masthead').style.setProperty('--banner', `url("${art.banner}")`);
   document.querySelector('.map-shell').style.setProperty('--arena-surround', `url("${art['arena-surround']}")`);
   $('filters').append(...phases.map((phase) => button(phase, () => filter(phase))));
-  const [initialScene, initialStep] = location.hash.slice(1).split('/');
-  const requested = library.find((clip) => clip.scene === initialScene);
+  function readStepLink() {
+    const [scene, number] = location.hash.slice(1).split('/');
+    const clip = library.find((item) => item.scene === scene);
+    const index = Number(number) - 1;
+    const step = clip && Number.isInteger(index) && index >= 0 && index < clip.beats.length ? index : 0;
+    return { scene, clip, step };
+  }
+
+  window.addEventListener('hashchange', () => {
+    const { clip, step } = readStepLink();
+    if (!clip) return;
+    if (clip === state.clip) seekStep(step, true);
+    else {
+      filter('全部');
+      choose(clip, { autoplay: true, step });
+    }
+  });
+  const { scene, clip, step } = readStepLink();
   filter('全部');
-  choose(requested ?? library[0], initialScene === 'soaks' || initialScene === 'p1eggs');
-  if (requested && initialStep && Number.isInteger(Number(initialStep))) seekStep(Number(initialStep) - 1);
+  choose(clip ?? library[0], {
+    writeHash: scene === 'soaks' || scene === 'p1eggs',
+    autoplay: true,
+    step
+  });
 })();
 
 </script>
