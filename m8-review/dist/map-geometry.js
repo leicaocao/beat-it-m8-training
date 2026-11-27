@@ -1,7 +1,16 @@
 (() => {
   const anchorMap = 2610;
   const anchorNpc = 267418;
+  const physicalTail = 259555;
+  const wretch = 263942;
   const artEdgeRatio = .44;
+  const tailWaterRatio = .474;
+  const p1Center = [-1, 155370];
+  const p1SideTails = [[-4082, 155360], [3986, 155329]];
+  // Hexweaver pull #17: paired WCL player samples with map pixels, then
+  // measured the platform rim. The DreamForge art's rim is 1064 px wide.
+  const p1UnitsPerPixel = 3780 / 532;
+  const p1CropPixels = 1064 * 469 / 415;
   // Eight stationary Rattler spawn coordinates observed in the guild report
   // and the public sample. Each pair faces across the same P1 arena.
   const anchorPairs = [
@@ -62,6 +71,29 @@
     };
   }
 
+  function mapOffset(bounds, x, y) {
+    return [x - bounds.cx, bounds.cy - y];
+  }
+
+  function fitP1Platform(base) {
+    const [cx, cy] = p1Center;
+    const art = { cx, cy, span: p1CropPixels * p1UnitsPerPixel,
+      nativeSize: [2123 * p1UnitsPerPixel, 1188 * p1UnitsPerPixel] };
+    return { ...fitArt(base, art, 'p1-reference-platform'), raw: base };
+  }
+
+  function p1SoakRing(bounds, anchor) {
+    if (bounds?.source !== 'p1-reference-platform' || anchor?.map !== anchorMap) return null;
+    const dx = anchor.x - bounds.cx;
+    const dy = anchor.y - bounds.cy;
+    const distance = Math.hypot(dx, dy);
+    if (!Number.isFinite(distance) || distance < 4200 || distance > 6100) return null;
+    // The soak is inward of the logged coil actor. Fit from the two visible
+    // rings in the reference replay, not a replacement for the WCL position.
+    const shift = 2000 / distance;
+    return { x: anchor.x - dx * shift, y: anchor.y - dy * shift, radius: 1050 };
+  }
+
   function calibratedArena(base, observed, pairs, phase) {
     if (observed.size < 6) return base;
     const confirmedPairs = pairs.filter(pair => pair.every(point => observed.has(point)));
@@ -79,6 +111,8 @@
     const maps = new Map();
     const observed = new Map([['1', new Set()], ['4', new Set()]]);
     const coils = new Map([['1', new Set()], ['3', new Set()]]);
+    let p1TailObserved = false;
+    let p1CenterObserved = false;
     const mayUseArt = Number(report?.encounterID) === 3492;
     for (const fight of report?.fights || []) {
       const transitions = (fight.phaseTransitions || []).filter(phase => Number.isFinite(phase?.t))
@@ -94,6 +128,11 @@
           collect(phases, phase + ':' + map, actor, x, y);
           collect(maps, map, actor, x, y);
           if (!mayUseArt || map !== anchorMap) continue;
+          if (phase === '1') {
+            const matches = ([ax, ay]) => Math.hypot(x - ax, y - ay) <= 60;
+            if (!p1TailObserved && Number(actor.gameID) === physicalTail && p1SideTails.some(matches)) p1TailObserved = true;
+            if (!p1CenterObserved && Number(actor.gameID) === wretch && matches(p1Center)) p1CenterObserved = true;
+          }
           if (Number(actor.gameID) === anchorNpc) {
             const anchor = arenaPoints.get(phase)?.find(([ax, ay]) => Math.hypot(x - ax, y - ay) <= 60);
             if (anchor) observed.get(phase).add(anchor);
@@ -103,18 +142,21 @@
       }
     }
     const phaseBounds = new Map([...phases].map(([key, bucket]) => [key, measuredBounds(bucket, 'wcl-grid')]));
+    const p1Key = '1:' + anchorMap;
+    const p1Raw = phaseBounds.get(p1Key);
     for (const [phase, pairs] of arenaPairs) {
       const key = phase + ':' + anchorMap;
       const base = phaseBounds.get(key);
       if (base) phaseBounds.set(key, calibratedArena(base, observed.get(phase), pairs, phase));
     }
-    const opener = phaseBounds.get('1:' + anchorMap);
+    const opener = phaseBounds.get(p1Key);
     const transitionKey = '3:' + anchorMap;
     const transition = phaseBounds.get(transitionKey);
     const shared = [...coils.get('3')].filter(point => coils.get('1').has(point));
     if (opener?.art && transition && shared.length >= 3) {
       phaseBounds.set(transitionKey, fitArt(transition, opener.art, 'transition-coil-anchors'));
     }
+    if (p1Raw && p1TailObserved && p1CenterObserved) phaseBounds.set(p1Key, fitP1Platform(p1Raw));
     return {
       phaseBounds,
       mapBounds: new Map([...maps].map(([map, bucket]) => [map, measuredBounds(bucket, 'wcl-map-fallback')])),
@@ -127,5 +169,15 @@
       geometry?.mapBounds?.get(map) || null;
   }
 
-  globalThis.M8MapGeometry = { prepare, view };
+  function tailWaterMarker(art, point) {
+    if (!art || art.nativeSize) return point;
+    const dx = point.x - art.cx;
+    const dy = point.y - art.cy;
+    const octagonDistance = Math.max(Math.abs(dx), Math.abs(dy), (Math.abs(dx) + Math.abs(dy)) * Math.SQRT1_2);
+    if (!octagonDistance || octagonDistance >= art.span * tailWaterRatio) return point;
+    const scale = art.span * tailWaterRatio / octagonDistance;
+    return { ...point, x: art.cx + dx * scale, y: art.cy + dy * scale };
+  }
+
+  globalThis.M8MapGeometry = { prepare, view, mapOffset, tailWaterMarker, p1SoakRing };
 })();

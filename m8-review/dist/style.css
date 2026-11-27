@@ -38,7 +38,7 @@ a:hover { color: #eff5ff; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input[type="range"], input[type="checkbox"] { accent-color: var(--accent-bg); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
-.masthead-actions:has(input:focus-visible) .upload { outline: 2px solid var(--accent); outline-offset: 2px; }
+.import-actions:has(input:focus-visible) .upload { outline: 2px solid var(--accent); outline-offset: 2px; }
 label { font-size: .8rem; color: var(--muted); }
 h1, h2, p { margin: 0; }
 h1 { font-size: 1.27rem; letter-spacing: .025em; line-height: 1.25; }
@@ -71,6 +71,8 @@ h2 { font-size: .96rem; font-weight: 670; }
 .location-popover form { display: flex; gap: 6px; }
 .location-popover input { min-width: 0; flex: 1; }
 .location-popover p { margin-top: 7px; color: var(--muted); font-size: .75rem; line-height: 1.45; }
+.report-import .location-popover { right: 0; left: auto; }
+.import-actions { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line); }
 .message { margin-bottom: 8px; padding: 8px 11px; border: 1px solid #7c684b; border-radius: 8px; background: #30291f; color: var(--gold); font-size: .85rem; }
 
 .battle {
@@ -265,7 +267,10 @@ canvas.panning { cursor: grabbing; }
 .map-legend p { display: flex; align-items: center; gap: 7px; color: #d3def0; font-size: .74rem; white-space: nowrap; }
 .map-legend i { width: 12px; height: 12px; flex: none; border: 2px solid #ffc56f; border-radius: 50%; }
 .map-legend .large-egg { border-color: #c3a3ff; }
-.map-legend .ground-egg { border-color: #c8a5f0; border-style: dashed; }
+.map-legend .ground-egg { border-color: #ffe2a0; border-radius: 50%; background: url('assets/egg.webp') center / cover; }
+.map-legend .ground-egg-shield { height: 7px; border-radius: 2px; border-color: #152018; background: #377cc4; }
+.map-legend .tail-unit { border-color: #efc67f; background: url('assets/encounter-tail.webp') center / cover; }
+.map-legend .large-add { border-color: #ff9f7b; background: url('assets/encounter-add.webp') center / cover; }
 .map-legend .fang-line { height: 0; border-width: 1px 0; border-color: #e8a8d7; border-style: dashed; border-radius: 0; }
 .map-legend .p3-target { border-color: #f5a3ae; }
 .video-file { position: relative; }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#10141e">
   <title>M8 乌拉特克复盘室 · BEAT IT</title>
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=9">
   <link rel="stylesheet" href="timeline.css?v=5">
   <link rel="stylesheet" href="analysis.css?v=5">
 </head>
@@ -30,8 +30,21 @@
             <p>已载入的报告可按链接跳到战斗和时间。</p>
           </div>
         </details>
-        <label class="action primary upload" for="import-file">导入日志</label>
-        <input id="import-file" class="visually-hidden" type="file" accept=".json,application/json">
+        <details class="report-location report-import" id="import-log">
+          <summary class="action primary">导入日志</summary>
+          <div class="location-popover">
+            <form id="wcl-import-form">
+              <label for="wcl-import-url" class="visually-hidden">粘贴 WCL 报告链接</label>
+              <input id="wcl-import-url" type="url" placeholder="粘贴 WCL 报告链接" required>
+              <button id="wcl-import-submit" type="submit">导入</button>
+            </form>
+            <p>可以粘贴报告或单场战斗链接。在线拉取需要本机 WCL 授权。</p>
+            <div class="import-actions">
+              <label class="action upload" for="import-file">选择 JSON 文件</label>
+              <input id="import-file" class="visually-hidden" type="file" accept=".json,application/json">
+            </div>
+          </div>
+        </details>
       </div>
     </header>
 
@@ -100,6 +113,9 @@
               <label><input id="npc-hp" type="checkbox" checked> 首领血量</label>
               <label><input id="show-targets" type="checkbox"> 已记录施法目标</label>
               <label><input id="show-debuffs" type="checkbox"> 机制减益</label>
+              <label><input id="show-soaks" type="checkbox" checked> P1 分摊参考圈</label>
+              <label><input id="show-motion" type="checkbox" checked> P1 3D 动画</label>
+              <label><input id="show-wave-callouts" type="checkbox" checked> 中波飘「菜」</label>
               <label><input id="art" type="checkbox" checked> 场地参考图</label>
             </div>
           </details>
@@ -108,7 +124,12 @@
             <div class="layer-options">
               <p><i class="small-egg"></i> 手持小蛋</p>
               <p><i class="large-egg"></i> 手持大蛋</p>
-              <p><i class="ground-egg"></i> 卵簇位置记录</p>
+              <p><i class="ground-egg"></i> 地面蛇卵（仅显示有记录的位置）</p>
+              <p><i class="ground-egg-shield"></i> 硬化护盾（有记录才显示，破盾后蛋闪烁）</p>
+              <p><i class="tail-unit"></i> 实体尾巴 · P1 显示 WCL 记录点，若有虚线则连到 WCL 落点</p>
+              <p>紫圈 · P1 分摊范围，按 Hexweaver 画面对照估算，不是尾巴坐标</p>
+              <p>3D 蛇身与绿浪 · 按日志施法时间绘制的示意，实际命中以记录为准</p>
+              <p><i class="large-add"></i> 疫鳞畸体 · 坐标断档时淡出</p>
               <p><i class="fang-line"></i> 毒牙点名或连线</p>
               <p><i class="p3-target"></i> 咬击或易爆清除减益</p>
             </div>
@@ -187,14 +208,17 @@
     <footer>位置来自日志采样。战术底图仅作参考。搬蛋、命中和死亡记录需结合打法复核。</footer>
   </main>
   <script src="mechanics.js" defer></script>
-  <script src="model.js" defer></script>
-  <script src="map-geometry.js?v=5" defer></script>
-  <script src="evidence.js?v=5" defer></script>
+  <script src="model.js?v=3" defer></script>
+  <script src="map-geometry.js?v=10" defer></script>
+  <script src="evidence.js?v=8" defer></script>
   <script src="room-evidence.js?v=5" defer></script>
   <script src="p3-evidence.js?v=5" defer></script>
   <script src="replay-tools.js?v=5" defer></script>
   <script src="analysis.js?v=5" defer></script>
   <script src="timeline.js?v=5" defer></script>
-  <script src="app.js?v=5" defer></script>
+  <script src="p1-motion.js?v=7" defer></script>
+  <script src="p1-mesh.js?v=9" defer></script>
+  <script src="p1-original.js?v=1" defer></script>
+  <script src="app.js?v=27" defer></script>
 </body>
 </html>

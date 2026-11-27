@@ -61,6 +61,7 @@ async function loadReports(inputs) {
 async function loadAssets() {
   const entries = await fs.readdir(path.join(dist, 'assets'), { withFileTypes: true });
   const assets = await Promise.all(entries.filter(entry => entry.isFile()).map(async entry => {
+    if (/^original-wave-(body|foam)\.webp$/.test(entry.name)) return null;
     const type = imageTypes.get(path.extname(entry.name).toLowerCase());
     if (!type) throw new Error('复盘页面包含无法内嵌的图片格式。');
     const key = 'assets/' + entry.name;

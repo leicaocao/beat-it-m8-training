@@ -1,5 +1,7 @@
 (() => {
   const trackGap = 3000;
+  const addFadeMs = 650;
+  const encounterUnits = new Map([[259555, 'tail'], [267418, 'tail-echo'], [263942, 'large-add']]);
   const at = (values, time, getter = value => value[0]) => {
     let left = 0;
     let right = values.length;
@@ -55,16 +57,51 @@
     return { ...report, fights };
   }
 
+  function connected(before, after) {
+    return Boolean(before && after && (before[4] ?? 0) === (after[4] ?? 0) &&
+      after[0] > before[0] && after[0] - before[0] <= trackGap);
+  }
+
   function sample(points, time) {
     const index = at(points, time);
     const current = points[index];
     const next = points[index + 1];
     if (!current || time - current[0] > trackGap) return null;
     const [, x, y, hp, map = 0] = current;
-    if (!next || (next[4] ?? 0) !== map || next[0] - current[0] > trackGap ||
-        next[0] === current[0]) return { x, y, hp, map, sampled: time === current[0] };
+    if (!connected(current, next)) return { x, y, hp, map, sampled: time === current[0] };
     const alpha = (time - current[0]) / (next[0] - current[0]);
     return { x: x + (next[1] - x) * alpha, y: y + (next[2] - y) * alpha, hp, map, sampled: alpha === 0 };
+  }
+
+  function mapRole(actor) {
+    if (actor.type === 'Player') return 'player';
+    if (actor.type !== 'NPC') return null;
+    return encounterUnits.get(Number(actor.gameID)) || (actor.subType === 'Boss' ? 'boss' : null);
+  }
+
+  function sampleMapUnit(actor, role, time) {
+    const points = actor.points;
+    const point = sample(points, time);
+    if (role === 'large-add') {
+      if (!point) return null;
+      const index = at(points, time);
+      const current = points[index];
+      let first = index;
+      while (first > 0 && time - points[first][0] < addFadeMs && connected(points[first - 1], points[first])) first--;
+      const afterGap = first > 0 && !connected(points[first - 1], points[first]);
+      const fadeIn = afterGap ? (time - points[first][0]) / addFadeMs : 1;
+      const fadeOut = connected(current, points[index + 1]) ? 1 : (current[0] + trackGap - time) / addFadeMs;
+      const opacity = Math.min(1, fadeIn, fadeOut);
+      return opacity > 0 ? { ...point, opacity } : null;
+    }
+    if (point || role !== 'tail') return point;
+    const index = at(points, time);
+    const before = points[index];
+    const after = points[index + 1];
+    if (!before || !after || (before[4] ?? 0) !== (after[4] ?? 0)) return null;
+    const [, x, y, hp, map = 0] = before;
+    if (x !== after[1] || y !== after[2]) return null;
+    return { x, y, hp, map, sampled: false };
   }
 
   function mapBounds(players) {
@@ -121,5 +158,5 @@
     const seconds = Math.floor(ms / 1000);
     return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
   };
-  globalThis.M8Model = { at, normalize, sample, phaseAt, isDead, hasShell, firstFrame, timeLabel };
+  globalThis.M8Model = { at, normalize, sample, mapRole, sampleMapUnit, phaseAt, isDead, hasShell, firstFrame, timeLabel };
 })();

@@ -1,14 +1,17 @@
 (() => {
   const byId = id => document.getElementById(id);
   const assetUrl = path => globalThis.M8AssetUrls?.[path] || path;
-  const { at, normalize, sample, phaseAt, isDead, firstFrame, timeLabel } = globalThis.M8Model;
+  const { at, normalize, sample, mapRole, sampleMapUnit, phaseAt, isDead, firstFrame, timeLabel } = globalThis.M8Model;
+  const p1Motion = globalThis.M8P1Motion;
   const { definitions, classify } = globalThis.M8Mechanics;
   const category = new Map(definitions.map(item => [item.key, item]));
   const fallback = { label: '其他事件', color: '#889d86' };
   const phaseLabels = new Map([[1, 'P1'], [2, 'P2'], [3, '过场'], [4, 'P3']]);
   const phaseLabel = phase => phaseLabels.get(Number(phase?.id)) || '阶段 ' + (phase?.id ?? '未知');
   const headlineBosses = [257758, 267460];
-  const actorLabels = new Map([[257758, '乌拉特克'], [268029, '乌拉特克']]);
+  const actorLabels = new Map([[257758, '乌拉特克'], [268029, '乌拉特克'],
+    [259555, '实体尾巴'], [267418, '虚影尾巴'], [263942, '疫鳞畸体']]);
+  const npcColors = { boss: '#ffe090', tail: '#efc67f', 'tail-echo': '#bba8ef', 'large-add': '#ff9f7b' };
   const roomSides = [['west', '西侧'], ['east', '东侧']];
   const priorityReadings = new Set([1290779, 1301117, 1302950, 1305650, 1305775, 1310764]);
   const p3Markers = new Set([1288879, 1312967, 1316356]);
@@ -18,9 +21,17 @@
   const ctx = canvas.getContext('2d');
   let mapWidth = canvas.width;
   let mapHeight = canvas.height;
-  const stageArt = new Image();
-  stageArt.src = assetUrl('assets/arena.webp');
-  stageArt.onload = () => paint();
+  let p1Renderer;
+  let p1Original;
+  let p1OriginalStarted = false;
+  function loadStageArt(path) {
+    const image = new Image();
+    image.onload = () => paint();
+    image.src = assetUrl(path);
+    return image;
+  }
+  const stageArt = loadStageArt('assets/arena.webp');
+  const fullStageArt = loadStageArt('assets/p1-platform.jpg');
   const colors = {
     DeathKnight: '#f17486', DemonHunter: '#d690ee', Druid: '#f6a85d', Evoker: '#65d6bc',
     Hunter: '#bce188', Mage: '#7bdcef', Monk: '#80e9b7', Paladin: '#f4a4cc',
@@ -36,7 +47,9 @@
     return [key, 'assets/class-' + key + (webpClasses.has(key) ? '.webp' : '.jpg')];
   }));
   const mapIcons = new Map();
-  for (const [key, path] of [...classIcons, ['boss', 'assets/boss.webp'], ['egg', 'assets/egg.webp']]) {
+  for (const [key, path] of [...classIcons, ['boss', 'assets/boss.webp'], ['egg', 'assets/egg.webp'],
+    ['tail', 'assets/encounter-tail.webp'], ['tail-echo', 'assets/encounter-tail.webp'],
+    ['large-add', 'assets/encounter-add.webp']]) {
     const marker = new Image();
     marker.onload = () => paint();
     marker.src = assetUrl(path);
@@ -508,7 +521,10 @@
     if (!fight) return;
     const changed = state.fight !== fight;
     stop();
-    if (changed) tools?.reset();
+    if (changed) {
+      tools?.reset();
+      p1Original?.clear();
+    }
     state.fight = fight;
     state.limit = 90;
     state.zoom = 1;
@@ -520,6 +536,8 @@
     nowAt = feedAt = -1;
     castKey = carrierKey = fangKey = roomKey = roomFrame = null;
     fight.bosses = fight.actors.filter(actor => actor.subType === 'Boss');
+    fight.mapUnits ||= fight.actors.map(actor => ({ actor, role: mapRole(actor) })).filter(item => item.role);
+    fight.p1Motion ||= p1Motion.build(fight);
     fight.hudBosses = new Map(headlineBosses.map(id => [id, fight.bosses.filter(actor => Number(actor.gameID) === id)
       .sort((a, b) => b.points.length - a.points.length)[0]]));
     const bosses = new Set(fight.bosses.map(actor => actor.id));
@@ -600,9 +618,17 @@
       new Option('第 ' + (index + 1) + ' 把 · #' + fight.id + ' · ' + timeLabel(fight.duration) +
         (fight.kill ? ' · 击杀' : ''), fight.id)));
     byId('fight').disabled = false;
-    const preferred = report.fights.find(fight => fight.id === Number(selected)) || report.fights.findLast(fight => fight.kill) ||
+    const preferred = selected === 'last' ? report.fights.reduce((last, fight) => fight.id > last.id ? fight : last)
+      : report.fights.find(fight => fight.id === Number(selected)) || report.fights.findLast(fight => fight.kill) ||
       report.fights.reduce((longest, fight) => fight.duration > longest.duration ? fight : longest);
     loadFight(preferred.id, seek);
+  }
+
+  function requireRequestedFight(raw, fight) {
+    const id = Number(fight);
+    if (Number.isSafeInteger(id) && id > 0 && !raw?.fights?.some(entry => entry.id === id)) {
+      throw new Error('这份复盘数据不包含该战斗编号。');
+    }
   }
 
   function parseReportLocation(value) {
@@ -614,9 +640,10 @@
     }
     const oldParams = new URLSearchParams(link.hash.slice(1));
     const param = key => link.searchParams.get(key) ?? oldParams.get(key);
-    const fight = Number(param('fight'));
+    const fightParam = param('fight');
+    const fight = Number(fightParam);
     const time = Number(param('position'));
-    return { code, fight: Number.isInteger(fight) && fight > 0 ? fight : null,
+    return { code, fight: fightParam === 'last' ? 'last' : Number.isSafeInteger(fight) && fight > 0 ? fight : null,
       time: Number.isFinite(time) && time > 0 ? time : 0 };
   }
 
@@ -625,11 +652,12 @@
       jump(location.time);
       return;
     }
-    if (!state.report.fights.some(fight => fight.id === location.fight)) {
+    const id = location.fight === 'last' ? Math.max(...state.report.fights.map(fight => fight.id)) : location.fight;
+    if (!state.report.fights.some(fight => fight.id === id)) {
       message('这份复盘数据不包含该战斗编号。');
       return;
     }
-    loadFight(location.fight, location.time);
+    loadFight(id, location.time);
   }
 
   function paint() {
@@ -638,28 +666,55 @@
     const height = mapHeight;
     const focus = Number(byId('focus').value);
     const phase = fight ? phaseAt(fight, time) : null;
-    const current = fight ? fight.actors.filter(actor => actor.type === 'Player' || actor.subType === 'Boss')
-      .map(actor => ({ actor, point: sample(actor.points, time) })).filter(item => item.point) : [];
+    const tracked = fight ? fight.mapUnits.map(({ actor, role }) => ({ actor, role,
+      point: sampleMapUnit(actor, role, time) })) : [];
+    const current = tracked.filter(item => item.point);
     const maps = new Map();
     for (const { actor, point } of current) if (actor.type === 'Player') maps.set(point.map, (maps.get(point.map) || 0) + 1);
     const focused = current.find(item => item.actor.id === focus);
     const map = focused?.point.map ?? [...maps].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const bounds = fight && (globalThis.M8MapGeometry.view(state.report.geometry, phase?.id, map) || fight.bounds.get(map));
+    const artEnabled = byId('art').checked;
+    const geometry = fight && (globalThis.M8MapGeometry.view(state.report.geometry, phase?.id, map) || fight.bounds.get(map));
+    const bounds = !artEnabled && geometry?.raw ? geometry.raw : geometry;
+    const showArt = !fight || (artEnabled && (!bounds || bounds.art));
+    const show3D = showArt && bounds?.source === 'p1-reference-platform' && byId('show-motion').checked;
+    if (show3D && p1Renderer === undefined) {
+      const waveImages = ['127.0.0.1', '[::1]', 'localhost'].includes(location.hostname) ? {
+        body: assetUrl('assets/original-wave-body.webp'), foam: assetUrl('assets/original-wave-foam.webp'), loaded: paint,
+      } : undefined;
+      try { p1Renderer = globalThis.M8P1Mesh.createRenderer(document.createElement('canvas'), waveImages); }
+      catch (error) { console.warn('P1 3D could not start:', error); p1Renderer = null; }
+    }
+    if (show3D && !p1OriginalStarted && /^https?:$/.test(location.protocol)) {
+      p1OriginalStarted = true;
+      globalThis.M8P1Original?.load(assetUrl('assets/original-p1-models.json')).then(renderer => {
+        p1Original = renderer;
+        if (renderer) paint();
+      }).catch(error => console.warn('P1 original model could not load:', error));
+    }
+    const motion = show3D && p1Renderer;
     const mapKey = bounds ? [phase?.id, map].join(':') : null;
     if (mapKey && lastMapKey && mapKey !== lastMapKey) state.panX = state.panY = 0;
     if (mapKey) lastMapKey = mapKey;
-    const padding = bounds?.art && byId('art').checked ? 8 : 30;
-    const scale = bounds ? Math.min((width - padding) / bounds.spanX, (height - padding) / bounds.spanY) * state.zoom : 1;
-    const project = (x, y) => [width / 2 + state.panX + (x - bounds.cx) * scale,
-      height / 2 + state.panY - (y - bounds.cy) * scale];
-    const showArt = !fight || (byId('art').checked && (!bounds || bounds.art));
+    const padding = bounds?.art && artEnabled ? 8 : 30;
+    const extraHeight = motion ? p1Original ? 2050 : 800 : 0;
+    const sceneY = motion ? height * (p1Original ? .053 : .027) : 0;
+    const scale = bounds ? Math.min((width - padding) / bounds.spanX, (height - padding) / (bounds.spanY + extraHeight)) * state.zoom : 1;
+    const project = (x, y) => {
+      const [dx, dy] = globalThis.M8MapGeometry.mapOffset(bounds, x, y);
+      return [width / 2 + state.panX + dx * scale, height / 2 + sceneY + state.panY + dy * scale];
+    };
     ctx.fillStyle = showArt ? '#101b17' : '#0c1421';
     ctx.fillRect(0, 0, width, height);
-    if (showArt && stageArt.complete && stageArt.naturalWidth) {
-      const size = bounds?.art ? bounds.art.span * scale : Math.max(width, height);
-      const [artX, artY] = bounds?.art ? project(bounds.art.cx, bounds.art.cy) : [width / 2, height / 2];
+    const art = showArt ? bounds?.art : null;
+    const stageImage = art?.nativeSize ? fullStageArt : stageArt;
+    if (showArt && stageImage.complete && stageImage.naturalWidth) {
+      const [artWidth, artHeight] = art?.nativeSize?.map(size => size * scale) ??
+        Array(2).fill(art ? art.span * scale : Math.max(width, height));
+      const [artX, artY] = art ? project(art.cx, art.cy) : [width / 2, height / 2];
       ctx.globalAlpha = fight ? .83 : .7;
-      ctx.drawImage(stageArt, artX - size / 2, artY - size / 2, size, size);
+      if (motion) ctx.drawImage(stageImage, 135, 105, 370, 920, 0, 0, width, height);
+      ctx.drawImage(stageImage, artX - artWidth / 2, artY - artHeight / 2, artWidth, artHeight);
       ctx.globalAlpha = 1;
       const shade = ctx.createRadialGradient(width * .5, height * .45, height * .12,
         width * .5, height * .47, height * .7);
@@ -679,13 +734,24 @@
     }
 
     visibleActors = [];
-    byId('map-note').textContent = !bounds ? '此刻没有可用的站位采样' :
-      showArt ? '场地锚点配准 · 边界参考' : 'WCL 坐标 · 超过 3 秒没有采样的角色隐藏';
-    if (!bounds) return;
+    const addGap = tracked.some(({ actor, role, point }) => role === 'large-add' && !point &&
+      actor.points[0]?.[0] < time && time <= actor.points.at(-1)?.[0] && !isDead(fight, actor, time));
+    const mapNote = !bounds ? '此刻没有可用的站位采样' : !showArt ? 'WCL 原始坐标' :
+      bounds.source === 'p1-reference-platform' ? 'P1 场地比例参照 Hexweaver · WCL 坐标未改' :
+        '场地锚点配准 · 尾巴虚线连到 WCL 落点';
+    if (!bounds) { byId('map-note').textContent = mapNote; return; }
+    const renderedMotion = motion ? paintP1Motion(fight, time, bounds, scale, project) : null;
+    const animatedActors = renderedMotion?.actors;
+    byId('map-note').textContent = mapNote + (renderedMotion?.original ? ' · 原模型' :
+      animatedActors ? ' · 3D' : show3D ? ' · 图标模式' : '') +
+      (addGap ? ' · 畸体坐标缺采样' : '');
     const frame = globalThis.M8Evidence.at(fight.evidence, time);
     if (state.layers.room && roomFrame?.active) paintRoomAnchors(roomFrame, map, project);
+    if (showArt && byId('show-soaks').checked && bounds.source === 'p1-reference-platform') {
+      paintP1Soaks(fight, time, bounds, scale, project);
+    }
     const carrying = new Map([...frame.eggs.small, ...frame.eggs.large].map(egg => [egg.actorId, egg]));
-    if (state.layers.egg) paintEggEvidence(fight.evidence, time, map, project);
+    const eggBars = state.layers.egg ? paintEggEvidence(fight.evidence, time, map, project) : [];
     const fangs = state.layers.fang ? frame.activeFangs : [];
     const fangTargets = new Set(fangs.map(item => item.actorId));
     const waves = new Set(state.layers.wave ? frame.activeWaves.map(wave => wave.actorId) : []);
@@ -696,27 +762,32 @@
     if (focused) paintTrail(focused.actor, time, map, project);
     const ordered = current.filter(item => item.point.map === map).sort((a, b) =>
       Number(a.actor.id === focus) - Number(b.actor.id === focus));
-    for (const { actor, point } of ordered) {
-      const [x, y] = project(point.x, point.y);
+    for (const { actor, role, point } of ordered) {
+      if (animatedActors?.has(actor.id)) continue;
+      const npc = role !== 'player';
+      const marker = role === 'tail' && showArt ? globalThis.M8MapGeometry.tailWaterMarker(bounds.art, point) : point;
+      const [x, y] = project(marker.x, marker.y);
       if (x < 9 || x > width - 9 || y < 9 || y > height - 9) continue;
-      const boss = actor.subType === 'Boss';
       const dead = isDead(fight, actor, time);
-      if (dead && !state.layers.death) continue;
+      if (dead && (npc || !state.layers.death)) continue;
       const selected = actor.id === focus;
-      const color = boss ? '#ffe090' : colors[actor.subType] || '#d3eab8';
-      ctx.globalAlpha = focus && !selected && !boss ? .34 : 1;
-      const radius = (boss ? 15 : selected ? 12 : 9) * (width < 440 ? .85 : 1);
+      const color = npc ? npcColors[role] : colors[actor.subType] || '#d3eab8';
+      ctx.globalAlpha = point.opacity ?? (focus && !selected && !npc ? .34 : 1);
+      const radius = (role === 'tail-echo' ? 11 : npc ? 15 : selected ? 12 : 9) * (width < 440 ? .85 : 1);
+      if (marker !== point) paintTailAnchor(x, y, project(point.x, point.y));
       ctx.beginPath();
       ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
       ctx.fillStyle = '#090f1be8';
       ctx.fill();
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = dead ? '#5e343a' : boss ? '#6b4b23' : '#152438';
+      ctx.fillStyle = dead ? '#5e343a' : npc ? '#392c22' : '#152438';
       ctx.fill();
       ctx.lineWidth = selected ? 3 : 2;
       ctx.strokeStyle = dead ? '#f59595' : color;
+      if (role === 'tail-echo') ctx.setLineDash([3, 2]);
       ctx.stroke();
+      ctx.setLineDash([]);
       if (dead) {
         ctx.beginPath();
         ctx.moveTo(x - 4, y - 4); ctx.lineTo(x + 4, y + 4);
@@ -728,7 +799,7 @@
         ctx.arc(x, y, selected ? 4 : 3, 0, Math.PI * 2);
         ctx.fill();
       }
-      const icon = mapIcons.get(boss ? 'boss' : String(actor.subType || '').toLowerCase());
+      const icon = mapIcons.get(npc ? role : String(actor.subType || '').toLowerCase());
       if (!dead && icon?.complete && icon.naturalWidth) {
         const iconRadius = radius - 2;
         ctx.save();
@@ -779,17 +850,184 @@
         ctx.fillStyle = point.hp < 35 ? '#f1a4a8' : '#96ddba';
         ctx.fillRect(x - 10, y + radius + 4, Math.max(0, Math.min(20, point.hp / 5)), 3);
       }
-      if (boss || selected || byId('names').checked) {
+      if (npc || selected || byId('names').checked) {
+        const left = x > width - 80;
+        const label = npc ? actorName(actor.id) : actor.name;
         ctx.font = 'bold 14px "Microsoft YaHei", sans-serif';
+        ctx.textAlign = left ? 'right' : 'left';
         ctx.strokeStyle = '#101a2b';
         ctx.lineWidth = 4;
-        ctx.strokeText(actor.name, x + 13, y - 9);
+        ctx.strokeText(label, x + (left ? -13 : 13), y - 9);
         ctx.fillStyle = color;
-        ctx.fillText(actor.name, x + 13, y - 9);
+        ctx.fillText(label, x + (left ? -13 : 13), y - 9);
+        ctx.textAlign = 'left';
       }
       ctx.globalAlpha = 1;
       if (actor.type === 'Player') visibleActors.push({ x, y, id: actor.id });
     }
+    paintEggShields(eggBars);
+    if (state.layers.wave && byId('show-wave-callouts').checked) paintWaveCallouts(fight, time, map, project);
+  }
+
+  function paintWaveCallouts(fight, time, map, project) {
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    for (const { actorId, t, progress } of globalThis.M8Evidence.waveCallouts(fight.evidence, time)) {
+      const actor = fight.actorById.get(actorId);
+      if (!actor) continue;
+      const track = actor.points;
+      const live = !isDead(fight, actor, time) && sample(track, time);
+      const point = live || sample(track, t);
+      if (!point || point.map !== map) continue;
+      const [x, y] = project(point.x, point.y);
+      if (x < 12 || x > mapWidth - 12 || y < 4 || y > mapHeight - 4) continue;
+      const rise = reduced ? 0 : 8 * (1 - (1 - progress) ** 2);
+      const baseline = Math.max(28, y - 14 - rise);
+      ctx.save();
+      ctx.globalAlpha = (progress < .08 ? .7 + progress * 3.75 : 1) * Math.min(1, (1 - progress) * 3.35);
+      ctx.font = `900 ${mapWidth < 440 ? 28 : 34}px KaiTi, STKaiti, "Microsoft YaHei", serif`;
+      ctx.textAlign = 'center';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#2b0809';
+      ctx.lineWidth = 4;
+      ctx.shadowColor = '#710509';
+      ctx.shadowBlur = 8;
+      ctx.strokeText('菜', x, baseline);
+      ctx.shadowBlur = 0;
+      const ink = ctx.createLinearGradient(x, baseline - 25, x, baseline + 2);
+      ink.addColorStop(0, '#ff7462');
+      ink.addColorStop(.45, '#ff302a');
+      ink.addColorStop(1, '#be1519');
+      ctx.fillStyle = ink;
+      ctx.fillText('菜', x, baseline);
+      ctx.restore();
+    }
+  }
+
+  function paintP1Motion(fight, time, bounds, scale, project) {
+    const motion = fight.p1Motion;
+    const scene = [];
+    const units = [];
+    const waveSize = globalThis.M8P1Mesh.waveScreenScale(scale);
+    if (state.layers.wave) {
+      for (const crest of p1Motion.wavelets(motion, time, bounds)) {
+        const [x, y] = project(crest.x, crest.y);
+        const margin = 65 * waveSize;
+        if (x >= -margin && x <= mapWidth + margin && y >= -margin && y <= mapHeight + margin) {
+          scene.push({ role: 'wave', pose: crest, x, y, angle: crest.angle, size: waveSize, alpha: crest.alpha });
+        }
+      }
+    }
+    for (const { actor, role } of fight.mapUnits) {
+      if (role !== 'boss' && role !== 'tail' && role !== 'tail-echo' || isDead(fight, actor, time)) continue;
+      const point = p1Motion.unitPoint(motion, actor, role, time);
+      if (!point) continue;
+      const size = scale * (role === 'boss' ? 18 : 16.5);
+      const [x, y] = project(point.x, point.y);
+      const angle = Math.atan2(point.y - bounds.cy, bounds.cx - point.x);
+      if (x < -150 * size || x > mapWidth + 150 * size || y < -150 * size || y > mapHeight + 150 * size) continue;
+      const pose = p1Motion.pose(motion, actor.id, time);
+      const cue = p1Original ? p1Motion.originalPose(motion, actor.id, role, time) : null;
+      const entry = { actor, role, pose, cue, x, y, angle, size, alpha: (point.opacity ?? 1) * (role === 'tail-echo' ? .63 : 1) };
+      scene.push(entry);
+      units.push(entry);
+    }
+    const dpi = Math.min(1.5, canvas.width / mapWidth);
+    const original = p1Original?.draw(units, mapWidth, mapHeight, dpi, scale);
+    if (!p1Renderer.draw(original ? scene.filter(entry => entry.role === 'wave') : scene, mapWidth, mapHeight, dpi)) return null;
+    canvas.dataset.waveMaterial = p1Renderer.hasWaveTextures() ? 'original-textures' : 'procedural';
+    for (const { role, x, y, angle, size, alpha } of units) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.scale(size, size);
+      ctx.translate(role === 'boss' ? 41 : 12, 0);
+      ctx.scale(1, role === 'boss' ? .78 : .4);
+      const shadow = ctx.createRadialGradient(0, 0, 4, 0, 0, role === 'boss' ? 75 : 47);
+      shadow.addColorStop(0, '#030d1572');
+      shadow.addColorStop(1, '#030d1500');
+      ctx.fillStyle = shadow;
+      ctx.globalAlpha = alpha;
+      ctx.fillRect(-76, -76, 152, 152);
+      ctx.restore();
+    }
+    ctx.drawImage(p1Renderer.canvas, 0, 0, mapWidth, mapHeight);
+    if (original) ctx.drawImage(p1Original.canvas, 0, 0, mapWidth, mapHeight);
+    for (const { actor, role, x, y, angle, size } of units) {
+      if (role === 'tail-echo') continue;
+      const color = npcColors[role];
+      if (x >= 4 && x <= mapWidth - 4 && y >= 4 && y <= mapHeight - 4) {
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#161b23';
+        ctx.stroke();
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+      const name = actorName(actor.id);
+      const body = (role === 'boss' ? 51 : 24) * size;
+      const labelX = x + Math.cos(angle) * body;
+      const labelY = role === 'tail' ? y + 16 * size : y + Math.sin(angle) * body - 36 * size;
+      if (labelX < 26 || labelX > mapWidth - 26 || labelY < 11 || labelY > mapHeight - 10) continue;
+      ctx.save();
+      ctx.font = 'bold 12px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.strokeStyle = '#0d1522';
+      ctx.lineWidth = 3;
+      ctx.strokeText(name, labelX, labelY);
+      ctx.fillStyle = color;
+      ctx.fillText(name, labelX, labelY);
+      ctx.restore();
+    }
+    return { actors: new Set(units.map(entry => entry.actor.id)), original };
+  }
+
+  function paintTailAnchor(x, y, [anchorX, anchorY]) {
+    ctx.save();
+    ctx.strokeStyle = '#efc67fb3';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(anchorX, anchorY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(anchorX, anchorY, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#efc67f';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function paintP1Soaks(fight, time, bounds, scale, project) {
+    ctx.save();
+    ctx.font = '600 12px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    for (const soak of fight.evidence.soaks) {
+      const until = soak.t - time;
+      if (until > 5000 || until < -900 || Number(fight.actorById.get(soak.source)?.gameID) !== 267679 ||
+          Number(phaseAt(fight, soak.t)?.id) !== 1) continue;
+      const ring = globalThis.M8MapGeometry.p1SoakRing(bounds, soak.anchor);
+      if (!ring) continue;
+      const [x, y] = project(ring.x, ring.y);
+      const radius = ring.radius * scale;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = until <= 2000 ? '#a185ef40' : '#a185ef24';
+      ctx.fill();
+      ctx.setLineDash(until > 2000 ? [5, 4] : []);
+      ctx.strokeStyle = '#c2a9f2e6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const label = until > 0 ? '分摊 ' + (until / 1000).toFixed(1) + ' 秒' : '分摊落地';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#171229';
+      ctx.strokeText(label, x, y - radius - 6);
+      ctx.fillStyle = '#e4d7fd';
+      ctx.fillText(label, x, y - radius - 6);
+    }
+    ctx.restore();
   }
 
   function paintRoomAnchors(room, map, project) {
@@ -862,21 +1100,61 @@
   }
 
   function paintEggEvidence(evidence, time, map, project) {
-    const records = [...(evidence.spawnAnchors || []), ...(evidence.fieldEggs || [])];
-    for (const record of records) {
-      const anchor = record.anchor;
-      if (anchor?.map !== map || time < record.start || time > Math.max(record.end, record.start + 1400)) continue;
+    const egg = mapIcons.get('egg');
+    const bars = [];
+    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    for (const { anchor, kind, shieldPct, brokenAt } of globalThis.M8Evidence.groundEggMarkers(evidence, time, map)) {
       const [x, y] = project(anchor.x, anchor.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       ctx.save();
-      ctx.setLineDash([3, 3]);
+      if (brokenAt !== null) {
+        ctx.globalAlpha = reducedMotion ? 1 : .55 + .45 * (.5 + .5 * Math.cos((time - brokenAt) * Math.PI * 2 / 800));
+        ctx.beginPath();
+        ctx.arc(x, y, 14, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffdc7366';
+        ctx.fill();
+      }
       ctx.beginPath();
-      ctx.arc(x, y, 8, 0, Math.PI * 2);
-      ctx.strokeStyle = record.kind === 'clutch' ? '#c8a5f0' : '#ffe2a0';
-      ctx.lineWidth = 2;
+      ctx.arc(x, y, 11, 0, Math.PI * 2);
+      ctx.fillStyle = '#171a1f';
+      ctx.fill();
+      ctx.strokeStyle = brokenAt !== null ? '#fff1a6' : kind === 'clutch' ? '#c8a5f0' : '#ffe2a0';
+      ctx.lineWidth = brokenAt !== null ? 2 : 1.5;
       ctx.stroke();
+      if (egg?.complete && egg.naturalWidth) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 9.5, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.drawImage(egg, x - 9, y - 9, 18, 18);
+        ctx.restore();
+      } else {
+        ctx.beginPath();
+        ctx.ellipse(x, y, 5, 7, .3, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffe2a0';
+        ctx.fill();
+      }
+      if (shieldPct !== null) bars.push({ x, y: y - 25, shieldPct });
       ctx.restore();
     }
+    return bars;
+  }
+
+  function paintEggShields(bars) {
+    if (!bars.length) return;
+    ctx.save();
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const { x, y, shieldPct } of bars) {
+      ctx.fillStyle = '#151820';
+      ctx.fillRect(x - 17, y, 34, 12);
+      ctx.fillStyle = '#377cc4';
+      ctx.fillRect(x - 16, y + 1, 32 * shieldPct / 100, 10);
+      ctx.fillStyle = '#fff7df';
+      ctx.fillText(Math.max(1, Math.round(shieldPct)) + '%', x, y + 6);
+    }
+    ctx.restore();
   }
 
   function paintRecentDeaths(fight, current, time, map, project) {
@@ -1050,6 +1328,7 @@
       const raw = JSON.parse(await file.text());
       if (current !== request) return;
       loadReport(raw);
+      byId('import-log').open = false;
       byId('catalog').value = '';
       if (requestedLocation && requestedLocation.code === raw.code) {
         const pending = requestedLocation;
@@ -1130,7 +1409,9 @@
   rows.addEventListener('keydown', event => {
     if (state.follow && ['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) setFollow(false);
   });
-  for (const control of ['focus', 'names', 'art', 'player-hp', 'npc-hp', 'show-targets', 'show-debuffs']) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) byId('show-motion').checked = false;
+  for (const control of ['focus', 'names', 'art', 'player-hp', 'npc-hp', 'show-targets', 'show-debuffs', 'show-soaks',
+    'show-motion', 'show-wave-callouts']) {
     byId(control).addEventListener('change', () => { nowAt = -1; refresh(); });
   }
   for (const control of ['search', 'kind']) byId(control).addEventListener('input', () => {
@@ -1180,13 +1461,64 @@
         raw = await response.json();
       }
       if (current !== request) return;
+      requireRequestedFight(raw, fight);
       loadReport(raw, fight, time);
       byId('catalog').value = item.code;
       message();
+      return true;
     } catch (error) {
       if (current === request) message(error.message);
     }
   }
+  byId('wcl-import-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    let target;
+    try {
+      target = parseReportLocation(byId('wcl-import-url').value.trim());
+    } catch {
+      message('请粘贴有效的 Warcraft Logs 报告链接。');
+      return;
+    }
+    if (state.report?.code === target.code && target.fight !== 'last' &&
+        (target.fight == null || state.report.fights.some(fight => fight.id === target.fight))) {
+      openReportLocation(target);
+      message();
+      byId('import-log').open = false;
+      return;
+    }
+    if (catalog.some(item => item.code === target.code)) {
+      if (await loadCatalog(target.code, target.fight, target.time)) byId('import-log').open = false;
+      return;
+    }
+    if (location.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(location.hostname)) {
+      message('此页面不能在线拉取，请在本机复盘服务中打开链接，或选择 JSON 文件。');
+      return;
+    }
+    const current = ++request;
+    const submit = byId('wcl-import-submit');
+    submit.disabled = true;
+    message('正在读取 WCL 日志，请稍等…');
+    try {
+      const response = await fetch('/api/import-wcl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: target.code, fight: target.fight }),
+      });
+      const raw = await response.json().catch(() => null);
+      if (current !== request) return;
+      if (!response.ok || !raw) throw new Error(raw?.error || '链接导入服务未运行，可以先选择 JSON 文件。');
+      requireRequestedFight(raw, target.fight);
+      loadReport(raw, target.fight, target.time);
+      byId('catalog').value = '';
+      requestedLocation = null;
+      byId('import-log').open = false;
+      message();
+    } catch (error) {
+      if (current === request) message(error.message || '无法读取 WCL 日志，请稍后再试。');
+    } finally {
+      submit.disabled = false;
+    }
+  });
   byId('catalog').addEventListener('change', event => loadCatalog(event.target.value));
   byId('location-form').addEventListener('submit', event => {
     event.preventDefault();

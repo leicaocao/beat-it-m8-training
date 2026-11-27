@@ -2,6 +2,7 @@
   const shellKinds = new Map([[1307612, 'small'], [1300312, 'large']]);
   const fangs = new Set([1301117, 1301118, 1311611]);
   const waveAura = 1292403;
+  const waveCalloutMs = 1250;
   const heartAura = 1299526;
   const heartCreature = 267460;
   const coilImpact = 1299010;
@@ -18,6 +19,8 @@
     [1288879, 'bite-target'], [1312967, 'purge-mark'], [1316356, 'purge-dot']
   ]);
   const clutchCreatures = new Map([[263535, 1290990], [271194, 1313754]]);
+  const anchorFlashMs = 1400;
+  const brokenEggFlashMs = 2400;
   const applyTypes = new Set(['applybuff', 'applydebuff']);
   const removeTypes = new Set(['removebuff', 'removedebuff']);
   const stackTypes = new Set(['applybuffstack', 'removebuffstack', 'applydebuffstack', 'removedebuffstack']);
@@ -141,6 +144,51 @@
       waves: wave.all, debuffs, splash, yolk };
   }
 
+  function collectWaveContacts(events, actors, intervals) {
+    const contacts = new Map();
+    const byActor = new Map();
+    const previousDamage = new Map();
+    const add = (actorId, t) => contacts.set(actorId + ':' + t, { actorId, t });
+    for (const interval of intervals) {
+      if (!byActor.has(interval.actorId)) byActor.set(interval.actorId, []);
+      byActor.get(interval.actorId).push(interval);
+      add(interval.actorId, interval.start);
+      let stack = interval.stacks[0].stack;
+      for (const mark of interval.stacks.slice(1)) {
+        if (mark.stack > stack) add(interval.actorId, mark.t);
+        stack = mark.stack;
+      }
+    }
+    for (const event of events) {
+      if (event.spellID !== waveAura || event.type !== 'damage' || !(event.amount > 0) ||
+          actors.get(event.target)?.type !== 'Player') continue;
+      const { target, t } = event;
+      const tracks = byActor.get(target) || [];
+      const track = tracks[lowerOrEqual(tracks, t + 150, item => item.start)];
+      const last = previousDamage.get(target);
+      previousDamage.set(target, t);
+      // Hits without an aura include lethal hits. Treat a string of nearby
+      // unpaired damage ticks as one contact rather than repeating the callout.
+      if ((!track || t > track.end + 150) && (last == null || t - last > 1200)) add(target, t);
+    }
+    return [...contacts.values()].sort((a, b) => a.t - b.t || a.actorId - b.actorId);
+  }
+
+  function waveCallouts(evidence, time) {
+    const found = [];
+    const shown = new Set();
+    const contacts = evidence.waveContacts || [];
+    for (let i = lowerOrEqual(contacts, time, item => item.t); i >= 0; i--) {
+      const contact = contacts[i];
+      const age = time - contact.t;
+      if (age >= waveCalloutMs) break;
+      if (shown.has(contact.actorId)) continue;
+      shown.add(contact.actorId);
+      found.push({ ...contact, progress: age / waveCalloutMs });
+    }
+    return found;
+  }
+
   function incidents(events, actors, spellID) {
     return events.filter(event => event.spellID === spellID && applyTypes.has(event.type) &&
       actors.get(event.target)?.type === 'Player');
@@ -173,7 +221,30 @@
     return soaks;
   }
 
-  function collectGroundAnchors(events, actors, duration) {
+  function shieldProgress(shield, duration) {
+    if (!Number.isFinite(shield.start) || !Number.isSafeInteger(shield.max) || shield.max <= 0 ||
+        !Array.isArray(shield.hits)) return null;
+    const end = shield.fadeAt ?? duration;
+    if (!Number.isFinite(end) || end < shield.start || end > duration) return null;
+    let remaining = shield.max;
+    let zeroAt = null;
+    const steps = [[shield.start, remaining]];
+    for (const hit of shield.hits) {
+      if (!Array.isArray(hit)) return null;
+      const [t, amount] = hit;
+      if (!Number.isFinite(t) || t < steps.at(-1)[0] || t > end ||
+          !Number.isSafeInteger(amount) || amount <= 0 || amount > remaining) return null;
+      remaining -= amount;
+      steps.push([t, remaining]);
+      if (!remaining) zeroAt = t;
+    }
+    if (Number.isFinite(shield.brokenAt) && shield.brokenAt >= steps.at(-1)[0] && shield.brokenAt <= end) {
+      zeroAt ??= shield.brokenAt;
+    }
+    return { max: shield.max, steps, zeroAt, end };
+  }
+
+  function collectGroundAnchors(events, actors, duration, rawShields) {
     const starts = new Map();
     const endings = new Map();
     for (const event of events) {
@@ -197,6 +268,14 @@
         endings.get(event.target).push(event);
       }
     }
+    const shields = new Map();
+    for (const raw of Array.isArray(rawShields) ? rawShields : []) {
+      const position = starts.get(raw?.actorId);
+      if (position?.kind !== 'hardened-spawn' || Math.abs(raw.start - position.start) > 750 ||
+          shields.has(raw.actorId)) continue;
+      const shield = shieldProgress(raw, duration);
+      if (shield) shields.set(raw.actorId, shield);
+    }
     const fieldEggs = [];
     const spawnAnchors = [];
     for (const position of starts.values()) {
@@ -206,11 +285,31 @@
       // With no end event, we know only the observed interval. A single sample
       // is an instantaneous anchor, not proof that the egg stayed there.
       position.end = Math.min(duration, Math.max(position.start, endEvent?.t ?? lastSample));
+      position.markerEnd = endEvent ? position.end : Math.min(duration, position.end + anchorFlashMs);
       position.endReason = endEvent ? endEvent.type === 'death' ? 'death' : 'aura-removed' : 'observation-ended';
       position.endEvent = endEvent || null;
+      position.shield = shields.get(position.actorId) || null;
+      if (position.shield) {
+        const { zeroAt, end } = position.shield;
+        const death = (endings.get(position.actorId) || []).find(event => event.type === 'death' && event.t >= position.start);
+        position.markerEnd = Math.min(duration, death?.t ?? duration, zeroAt === null ? end : zeroAt + brokenEggFlashMs);
+      }
       (position.kind === 'clutch' ? fieldEggs : spawnAnchors).push(position);
     }
     return { fieldEggs, spawnAnchors };
+  }
+
+  function groundEggMarkers(evidence, time, map) {
+    const markers = [];
+    for (const record of [...evidence.fieldEggs, ...evidence.spawnAnchors]) {
+      if (record.anchor.map !== map || time < record.start || time >= record.markerEnd) continue;
+      const shield = record.shield;
+      const brokenAt = shield?.zeroAt != null && time >= shield.zeroAt ? shield.zeroAt : null;
+      const point = brokenAt === null && shield?.steps[lowerOrEqual(shield.steps, time, step => step[0])];
+      const shieldPct = point ? 100 * point[1] / shield.max : null;
+      markers.push({ anchor: record.anchor, kind: record.kind, shieldPct, brokenAt });
+    }
+    return markers;
   }
 
   function countEvents(all, start, end, endInclusive = false) {
@@ -294,11 +393,12 @@
         kind: globalThis.M8Mechanics?.classify(event, hostileIDs) || 'other',
         phaseId: phases[lowerOrEqual(phases, event.t, phase => phase.t)]?.id ?? 1
       })),
-      ...collectGroundAnchors(events, actors, duration),
+      ...collectGroundAnchors(events, actors, duration, fight.eggShields),
       fieldEggsKnown: false,
       mapActors: [...actors.values()].filter(actor => actor.points?.length && mapRoles.has(actor.gameID))
         .map(actor => ({ actorId: actor.id, role: mapRoles.get(actor.gameID), gameID: actor.gameID }))
     };
+    all.waveContacts = collectWaveContacts(events, actors, all.waves);
     all.phases = phases.map((phase, index) => {
       const end = phases[index + 1]?.t ?? duration;
       return { id: phase.id, start: phase.t, end,
@@ -323,5 +423,5 @@
     };
   }
 
-  globalThis.M8Evidence = { build, at };
+  globalThis.M8Evidence = { build, at, groundEggMarkers, waveCallouts };
 })();
